@@ -49,14 +49,14 @@ A free, open-source tool for creating beautiful App Store screenshots with custo
 
 ### Project Management
 - **Multiple Projects**: Create, rename, delete, and duplicate projects
-- **Auto-Save**: Local IndexedDB + background server sync via Web Worker
+- **Auto-Save**: Debounced backend API saves with versioned JSON snapshots
 - **Export/Import**: Backup and restore projects as JSON files
 - **Screenshot Count**: See screenshot counts in project selector
 
 ### Server & Sync
 - **Backend API**: Express.js server with REST API for projects and images
 - **Image Storage**: MD5-based deduplication, relative path URLs
-- **Background Sync**: Web Worker pushes projects to server in background, never blocks UI
+- **Project Storage**: Backend project API is the source of truth; browser storage is not used
 - **Optional Auth**: Password-protect your instance via environment variables
 
 ### User Interface
@@ -123,7 +123,6 @@ src/
 │   ├── app.js          # Core application logic
 │   ├── styles.css      # Styling
 │   ├── api-client.js   # Server API client
-│   ├── sync-worker.js  # Background sync worker
 │   ├── img/            # Icons and assets
 │   └── models/         # 3D device models
 │
@@ -174,8 +173,6 @@ Your API key is stored locally in your browser and only sent to the respective A
 - Vanilla JavaScript (no frameworks) for frontend
 - HTML5 Canvas for 2D rendering
 - Three.js for 3D device mockups
-- IndexedDB for local storage
-- Web Worker for background server sync
 - Express.js for backend REST API
 - JSON file storage (no database required)
 - JSZip for batch export

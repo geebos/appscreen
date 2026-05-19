@@ -53,7 +53,6 @@ src/
 │   ├── llm.js                    # AI provider integration (Claude, OpenAI, Google)
 │   ├── lucide-icons.js           # Lucide icon picker data
 │   ├── api-client.js             # Remote API client (save/delete projects, upload/delete images)
-│   ├── sync-worker.js            # Web Worker for background server sync (2s debounce)
 │   ├── img/                      # Icons and asset images
 │   └── models/                   # 3D device models (GLB format)
 │
@@ -74,6 +73,8 @@ src/
 **API Endpoints:**
 | Method | Path | Description |
 |--------|------|-------------|
+| GET | `/api/projects` | List projects |
+| GET | `/api/projects/:id` | Load project |
 | PUT | `/api/projects/:id` | Save project (upsert) |
 | DELETE | `/api/projects/:id` | Delete project |
 | POST | `/api/images/upload` | Upload image (returns `{id, url}`) |
@@ -87,19 +88,13 @@ src/
 
 Key patterns in `app.js`:
 - `state` object at top holds all application state (screenshots, settings, text, background config)
-- `state._version` / `state._remoteVersion` — timestamp-based versioning for sync
+- `state._version` / `state._remoteVersion` — timestamp-based versioning from backend snapshots
 - `updateCanvas()` is the main render function - call after any state change
-- `saveState()` — persists to IndexedDB first, then pushes to sync worker for server sync
-- `loadState()` — loads from IndexedDB, restores `_version` and `_remoteVersion`
+- `saveState()` — serializes the current project and debounces `PUT /api/projects/:id`
+- `loadState()` — loads the current project with `GET /api/projects/:id`
 - `syncUIWithState()` updates all UI controls to reflect current state
-- Project management uses IndexedDB with two stores: `projects` (data) and `meta` (project list)
-
-Sync Worker (`sync-worker.js`):
-- Receives snapshots from `saveState()` via `postMessage`
-- Stack replacement: only keeps the latest pending snapshot
-- 2s debounce before sending PUT to server
-- Before PUT, uploads all image data URLs to `/api/images/upload` and replaces `src` with relative paths
-- Handles 401 by signaling main thread to redirect to login
+- Project management uses backend project APIs as the source of truth; there is no browser database fallback
+- Before project save, any remaining image data URLs are uploaded to `/api/images/upload` and replaced with relative paths
 
 Image Upload (`uploadImageToServer()` in `app.js`):
 - Called at all 5 upload entry points (screenshot, desktop import, background, element graphic, translation)
@@ -129,10 +124,10 @@ Localized screenshots (in `language-utils.js`):
 ## Key Functions
 
 **Project & Screenshots (`app.js`):**
-- `init()` / `initSyncWorker()` — initialize IndexedDB, load state, start sync worker
-- `createProject()` / `deleteProject()` / `switchProject()` / `duplicateProject()` — async project management (deleteProject also calls `apiDeleteProject`)
-- `saveState()` — writes to IndexedDB with `_version` timestamp, pushes to sync worker
-- `loadState()` — loads from IndexedDB, restores `_version` and `_remoteVersion` from meta store
+- `init()` — loads project list and current state from backend APIs
+- `createProject()` / `deleteProject()` / `switchProject()` / `duplicateProject()` — async project management through project APIs
+- `saveState()` — writes project snapshots to `PUT /api/projects/:id` with `_version` timestamp
+- `loadState()` — loads project snapshots from `GET /api/projects/:id`
 - `handleFiles()` — processes uploaded images, detects language, shows duplicate dialog if needed
 - `createNewScreenshot()` — creates screenshot entry with localized image support
 - `exportCurrent()` / `exportAll()` — generates PNG downloads from canvas (ZIP for batch export)

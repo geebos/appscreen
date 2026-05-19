@@ -1328,108 +1328,102 @@ const fileInput = document.getElementById('file-input');
 const screenshotList = document.getElementById('screenshot-list');
 const noScreenshot = document.getElementById('no-screenshot');
 
-// IndexedDB for larger storage (can store hundreds of MB vs localStorage's 5-10MB)
-let db = null;
-const DB_NAME = 'AppStoreScreenshotGenerator';
-const DB_VERSION = 2;
-const PROJECTS_STORE = 'projects';
-const META_STORE = 'meta';
-
 let currentProjectId = 'default';
 let projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
-let syncWorker = null;
+let projectStorageReady = false;
+let saveTimer = null;
+let pendingSaveSnapshot = null;
+let saveInFlight = false;
+let saveFlushPromise = null;
+const SAVE_DEBOUNCE_MS = 800;
 
 // Upload state
 let uploadAbortController = null;
 
-function openDatabase() {
-    return new Promise((resolve, reject) => {
-        try {
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
+function normalizeProjectList(serverProjects) {
+    const list = (serverProjects || []).map(p => ({
+        id: p.id,
+        name: p.name || 'Untitled',
+        screenshotCount: p.screenshotCount || 0
+    }));
 
-            request.onerror = (event) => {
-                console.error('IndexedDB error:', event.target.error);
-                // Continue without database
-                resolve(null);
-            };
-
-            request.onsuccess = () => {
-                db = request.result;
-                resolve(db);
-            };
-
-            request.onupgradeneeded = (event) => {
-                const database = event.target.result;
-
-                // Delete old store if exists (from version 1)
-                if (database.objectStoreNames.contains('state')) {
-                    database.deleteObjectStore('state');
-                }
-
-                // Create projects store
-                if (!database.objectStoreNames.contains(PROJECTS_STORE)) {
-                    database.createObjectStore(PROJECTS_STORE, { keyPath: 'id' });
-                }
-
-                // Create meta store for project list and current project
-                if (!database.objectStoreNames.contains(META_STORE)) {
-                    database.createObjectStore(META_STORE, { keyPath: 'key' });
-                }
-            };
-
-            request.onblocked = () => {
-                console.warn('Database upgrade blocked. Please close other tabs.');
-                resolve(null);
-            };
-        } catch (e) {
-            console.error('Failed to open IndexedDB:', e);
-            resolve(null);
-        }
-    });
+    return list.length > 0
+        ? list
+        : [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
 }
 
-// Load project list and current project
-async function loadProjectsMeta() {
-    if (!db) return;
-
-    return new Promise((resolve) => {
-        try {
-            const transaction = db.transaction([META_STORE], 'readonly');
-            const store = transaction.objectStore(META_STORE);
-
-            const projectsReq = store.get('projects');
-            const currentReq = store.get('currentProject');
-
-            transaction.oncomplete = () => {
-                if (projectsReq.result) {
-                    projects = projectsReq.result.value;
-                }
-                if (currentReq.result) {
-                    currentProjectId = currentReq.result.value;
-                }
-                updateProjectSelector();
-                resolve();
-            };
-
-            transaction.onerror = () => resolve();
-        } catch (e) {
-            resolve();
-        }
-    });
-}
-
-// Save project list and current project
-function saveProjectsMeta() {
-    if (!db) return;
-
-    try {
-        const transaction = db.transaction([META_STORE], 'readwrite');
-        const store = transaction.objectStore(META_STORE);
-        store.put({ key: 'projects', value: projects });
-        store.put({ key: 'currentProject', value: currentProjectId });
-    } catch (e) {
-        console.error('Error saving projects meta:', e);
+function updateCurrentProjectMeta(snapshot) {
+    let project = projects.find(p => p.id === snapshot.id);
+    if (!project) {
+        project = { id: snapshot.id, name: snapshot.name || 'Untitled', screenshotCount: 0 };
+        projects.push(project);
     }
+
+    project.name = snapshot.name || project.name || 'Untitled';
+    project.screenshotCount = snapshot.screenshots ? snapshot.screenshots.length : 0;
+}
+
+function cancelPendingSave(projectId) {
+    if (pendingSaveSnapshot?.id === projectId) {
+        pendingSaveSnapshot = null;
+    }
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+    }
+}
+
+function scheduleProjectSave(snapshot, immediate = false) {
+    pendingSaveSnapshot = snapshot;
+    if (immediate) {
+        return flushProjectSave();
+    }
+
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+        saveTimer = null;
+        flushProjectSave();
+    }, SAVE_DEBOUNCE_MS);
+
+    return Promise.resolve(snapshot);
+}
+
+async function flushProjectSave() {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+
+    if (saveInFlight) {
+        return saveFlushPromise || Promise.resolve();
+    }
+
+    saveInFlight = true;
+    saveFlushPromise = (async () => {
+        while (pendingSaveSnapshot) {
+            const snapshot = pendingSaveSnapshot;
+            pendingSaveSnapshot = null;
+
+            if (typeof apiSaveProject !== 'function') {
+                console.warn('Project API is unavailable; save skipped.');
+                if (!pendingSaveSnapshot) pendingSaveSnapshot = snapshot;
+                break;
+            }
+
+            const data = JSON.parse(JSON.stringify(snapshot));
+            await replaceProjectDataURLs(data);
+            const result = await apiSaveProject(data.id, data);
+            if (result) {
+                state._remoteVersion = result._serverVersion || result._version || data._version || 0;
+            } else {
+                if (!pendingSaveSnapshot) pendingSaveSnapshot = snapshot;
+                break;
+            }
+        }
+    })().finally(() => {
+        saveInFlight = false;
+        saveFlushPromise = null;
+    });
+
+    return saveFlushPromise;
 }
 
 // ===== Image Upload Helpers =====
@@ -1527,6 +1521,64 @@ async function uploadImageToServer(file) {
     }
 }
 
+function isDataURL(value) {
+    return typeof value === 'string' && value.startsWith('data:');
+}
+
+async function uploadDataURLAsset(dataURL, imageName, projectId) {
+    if (!isDataURL(dataURL) || typeof apiUploadImage !== 'function') return dataURL;
+
+    const blob = dataURLToBlob(dataURL);
+    const file = new File([blob], imageName || 'image.png', { type: blob.type || 'image/png' });
+    const result = await apiUploadImage(file, projectId || currentProjectId);
+    return result?.url || dataURL;
+}
+
+async function replaceBackgroundDataURL(background, imageName, projectId) {
+    if (!background) return;
+
+    const source = background.imageUrl || (typeof background.image === 'string' ? background.image : null);
+    if (!isDataURL(source)) return;
+
+    const url = await uploadDataURLAsset(source, imageName || 'background.png', projectId);
+    background.image = url;
+    background.imageUrl = url;
+}
+
+async function replaceElementDataURLs(elements, projectId) {
+    if (!Array.isArray(elements)) return;
+
+    for (const element of elements) {
+        if (element.type === 'graphic' && isDataURL(element.src)) {
+            element.src = await uploadDataURLAsset(element.src, element.name || 'graphic.png', projectId);
+        }
+    }
+}
+
+async function replaceProjectDataURLs(data) {
+    const projectId = data.id || currentProjectId;
+
+    for (const screenshot of data.screenshots || []) {
+        if (isDataURL(screenshot.src)) {
+            screenshot.src = await uploadDataURLAsset(screenshot.src, screenshot.name || 'screenshot.png', projectId);
+        }
+
+        if (screenshot.localizedImages) {
+            for (const langData of Object.values(screenshot.localizedImages)) {
+                if (isDataURL(langData?.src)) {
+                    langData.src = await uploadDataURLAsset(langData.src, langData.name || screenshot.name || 'screenshot.png', projectId);
+                }
+            }
+        }
+
+        await replaceBackgroundDataURL(screenshot.background, screenshot.name || 'background.png', projectId);
+        await replaceElementDataURLs(screenshot.elements, projectId);
+    }
+
+    await replaceBackgroundDataURL(data.defaults?.background, data.name || 'background.png', projectId);
+    await replaceElementDataURLs(data.defaults?.elements, projectId);
+}
+
 // Update project selector dropdown
 function updateProjectSelector() {
     const menu = document.getElementById('project-menu');
@@ -1565,131 +1617,43 @@ function updateProjectSelector() {
     });
 }
 
-// Initialize sync worker for background server sync
-function initSyncWorker() {
-    try {
-        syncWorker = new Worker('sync-worker.js');
-
-        syncWorker.onmessage = function (e) {
-            const msg = e.data;
-            if (msg.type === 'synced') {
-                state._remoteVersion = msg.serverVersion || msg._version;
-                // Persist remote version to meta store
-                if (db) {
-                    try {
-                        const tx = db.transaction([META_STORE], 'readwrite');
-                        const metaStore = tx.objectStore(META_STORE);
-                        metaStore.put({ key: 'remoteVersion_' + currentProjectId, value: state._remoteVersion });
-                    } catch (me) { /* ignore */ }
-                }
-            } else if (msg.type === 'needLogin') {
-                window.location.href = '/login.html';
-            } else if (msg.type === 'syncError') {
-                console.warn('Sync error:', msg.error);
-            } else if (msg.type === 'log') {
-                // Debug log - can be enabled for troubleshooting
-                // console.debug('[SyncWorker]', msg.status, msg.detail);
-            }
-        };
-
-        syncWorker.onerror = function (err) {
-            console.warn('Sync worker error:', err);
-        };
-
-        syncWorker.postMessage({
-            type: 'init',
-            apiBaseURL: location.origin,
-            projectId: currentProjectId,
-            lastRemoteVersion: state._remoteVersion
-        });
-    } catch (e) {
-        console.warn('Failed to initialize sync worker:', e);
-        syncWorker = null;
-    }
-}
-
-// Pull latest project data from server on init
-async function pullLatestFromServer() {
-    if (!db || typeof apiLoadProject !== 'function') return;
-
-    try {
-        const serverData = await apiLoadProject(currentProjectId);
-        if (!serverData) return; // 404 or network error
-
-        const serverVersion = serverData._serverVersion || serverData._version || 0;
-
-        if (serverVersion <= state._remoteVersion) {
-            // Server data is not newer, skip
-            return;
-        }
-
-        console.log(`Pulling server data (v${serverVersion} > local v${state._remoteVersion})`);
-
-        // Save server data to IndexedDB
-        const tx = db.transaction([PROJECTS_STORE], 'readwrite');
-        const store = tx.objectStore(PROJECTS_STORE);
-        delete serverData._serverVersion;
-        store.put(serverData);
-
-        // Update remote version in meta
-        state._remoteVersion = serverVersion;
-        const metaTx = db.transaction([META_STORE], 'readwrite');
-        const metaStore = metaTx.objectStore(META_STORE);
-        metaStore.put({ key: 'remoteVersion_' + currentProjectId, value: serverVersion });
-
-        // Wait for writes to complete
-        await new Promise(resolve => {
-            tx.oncomplete = () => {
-                metaTx.oncomplete = resolve;
-            };
-        });
-
-        // Reload state from IndexedDB
-        await loadState();
-        syncUIWithState();
-        updateCanvas();
-    } catch (e) {
-        console.warn('pullLatestFromServer failed:', e);
-    }
-}
-
-// Load project list from server, fallback to local IndexedDB
+// Load project list from backend API
 async function loadProjectsFromServer() {
-    if (typeof apiListProjects !== 'function') return;
+    if (typeof apiListProjects !== 'function') {
+        projects = normalizeProjectList([]);
+        currentProjectId = projects[0].id;
+        return;
+    }
 
     try {
         const serverProjects = await apiListProjects();
-        if (serverProjects && serverProjects.length > 0) {
-            projects = serverProjects.map(p => ({
-                id: p.id,
-                name: p.name,
-                screenshotCount: p.screenshotCount
-            }));
-            saveProjectsMeta();
-            return;
+        projects = normalizeProjectList(serverProjects);
+        if (!projects.some(p => p.id === currentProjectId)) {
+            currentProjectId = projects[0].id;
         }
     } catch (e) {
         console.warn('Failed to load projects from server:', e);
+        projects = normalizeProjectList([]);
+        currentProjectId = projects[0].id;
     }
-
-    // Fallback to local IndexedDB
-    await loadProjectsMeta();
 }
 
 // Initialize
 async function init() {
+    projectStorageReady = false;
     try {
-        await openDatabase();
         await loadProjectsFromServer();
         await loadState();
-        await pullLatestFromServer();
-        initSyncWorker();
+        projectStorageReady = true;
+        if (!state.name) {
+            const currentProject = projects.find(p => p.id === currentProjectId);
+            state.name = currentProject?.name || 'Default Project';
+        }
         syncUIWithState();
         updateCanvas();
     } catch (e) {
         console.error('Initialization error:', e);
-        // Continue with defaults
-        initSyncWorker();
+        projectStorageReady = true;
         syncUIWithState();
         updateCanvas();
     }
@@ -1708,13 +1672,15 @@ function initSync() {
     init();
 }
 
-// Save state to IndexedDB for current project
-function saveState() {
-    if (!db) return;
+function serializeElements(elements) {
+    return (elements || []).map(el => ({
+        ...el,
+        image: undefined
+    }));
+}
 
-    state._version = Date.now();
-
-    // Convert screenshots to base64 for storage, including per-screenshot settings and localized images
+function serializeStateForSave() {
+    // Convert runtime state to a backend-safe JSON snapshot.
     const screenshotsToSave = state.screenshots.map(s => {
         // Save localized images (without Image objects, just src/name)
         const localizedImages = {};
@@ -1744,16 +1710,13 @@ function saveState() {
             },
             screenshot: s.screenshot,
             text: s.text,
-            elements: (s.elements || []).map(el => ({
-                ...el,
-                image: undefined // Don't serialize Image objects
-            })),
+            elements: serializeElements(s.elements),
             popouts: s.popouts || [],
             overrides: s.overrides
         };
     });
 
-    const stateToSave = {
+    return {
         id: currentProjectId,
         _version: state._version,
         formatVersion: 2, // Version 2: new 3D positioning formula
@@ -1767,6 +1730,7 @@ function saveState() {
         projectLanguages: state.projectLanguages,
         defaults: {
             ...state.defaults,
+            elements: serializeElements(state.defaults.elements),
             background: {
                 ...state.defaults.background,
                 image: state.defaults.background.imageUrl || (state.defaults.background.image instanceof HTMLImageElement ? state.defaults.background.image.src : null) || null,
@@ -1774,31 +1738,19 @@ function saveState() {
             }
         }
     };
+}
+
+// Save state to backend API for current project
+function saveState(options = {}) {
+    if (!projectStorageReady && !options.force) return Promise.resolve(null);
+
+    state._version = Date.now();
+    const stateToSave = serializeStateForSave();
 
     // Update screenshot count in project metadata
-    const project = projects.find(p => p.id === currentProjectId);
-    if (project) {
-        project.screenshotCount = state.screenshots.length;
-        saveProjectsMeta();
-    }
+    updateCurrentProjectMeta(stateToSave);
 
-    try {
-        const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
-        const store = transaction.objectStore(PROJECTS_STORE);
-        store.put(stateToSave);
-    } catch (e) {
-        console.error('Error saving state:', e);
-    }
-
-    // Push to sync worker for background server sync
-    if (syncWorker) {
-        syncWorker.postMessage({
-            type: 'sync',
-            _version: state._version,
-            projectId: currentProjectId,
-            data: stateToSave
-        });
-    }
+    return scheduleProjectSave(stateToSave, options.immediate);
 }
 
 // Migrate 3D positions from old formula to new formula
@@ -1842,41 +1794,37 @@ function reconstructElementImages(elements) {
     });
 }
 
-// Load state from IndexedDB for current project
-function loadState() {
-    if (!db) return Promise.resolve();
+// Load state from backend API for current project
+async function loadState() {
+    if (typeof apiLoadProject !== 'function') {
+        applyProjectData(null);
+        return;
+    }
 
-    return new Promise((resolve) => {
-        try {
-            const transaction = db.transaction([PROJECTS_STORE], 'readonly');
-            const store = transaction.objectStore(PROJECTS_STORE);
-            const request = store.get(currentProjectId);
+    try {
+        const parsed = await apiLoadProject(currentProjectId);
+        applyProjectData(parsed);
+    } catch (e) {
+        console.error('Error loading state:', e);
+        applyProjectData(null);
+    }
+}
 
-            request.onsuccess = () => {
-                const parsed = request.result;
-                if (parsed) {
-                    state._version = parsed._version || 0;
-                    state.name = parsed.name || '';
-                    // Backward compat: for old projects without name in state,
-                    // look up name from local projects cache
-                    if (!state.name && parsed.id) {
-                        const meta = projects.find(p => p.id === parsed.id);
-                        state.name = meta ? meta.name : '';
-                    }
+function applyProjectData(parsed) {
+    if (parsed) {
+        const serverVersion = parsed._serverVersion || parsed._version || 0;
+        delete parsed._serverVersion;
 
-                    // Load remote version from meta
-                    try {
-                        const metaTx = db.transaction([META_STORE], 'readonly');
-                        const metaStore = metaTx.objectStore(META_STORE);
-                        const versionReq = metaStore.get('remoteVersion_' + currentProjectId);
-                        versionReq.onsuccess = () => {
-                            if (versionReq.result) {
-                                state._remoteVersion = versionReq.result.value || 0;
-                            }
-                        };
-                    } catch (me) {
-                        // Ignore meta read errors
-                    }
+        state._version = parsed._version || 0;
+        state._remoteVersion = serverVersion;
+        state.name = parsed.name || '';
+        // Backward compat: for old projects without name in state,
+        // look up name from server project metadata.
+        if (!state.name && parsed.id) {
+            const meta = projects.find(p => p.id === parsed.id);
+            state.name = meta ? meta.name : '';
+        }
+
                     // Check if this is an old-style project (no per-screenshot settings)
                     const isOldFormat = !parsed.defaults && (parsed.background || parsed.screenshot || parsed.text);
                     const hasScreenshotsWithoutSettings = parsed.screenshots?.some(s => !s.background && !s.screenshot && !s.text);
@@ -2072,23 +2020,13 @@ function loadState() {
                         state.defaults.screenshot = migratedScreenshot;
                         state.defaults.text = migratedText;
                     }
-                } else {
-                    // New project, reset to defaults
-                    resetStateToDefaults();
-                    updateScreenshotList();
-                }
-                resolve();
-            };
-
-            request.onerror = () => {
-                console.error('Error loading state:', request.error);
-                resolve();
-            };
-        } catch (e) {
-            console.error('Error loading state:', e);
-            resolve();
-        }
-    });
+    } else {
+        // New project, reset to defaults
+        resetStateToDefaults();
+        const currentProject = projects.find(p => p.id === currentProjectId);
+        state.name = currentProject?.name || 'Default Project';
+        updateScreenshotList();
+    }
 }
 
 // Show migration prompt for old-style projects
@@ -2207,34 +2145,22 @@ function resetStateToDefaults() {
 
 // Switch to a different project
 async function switchProject(projectId) {
-    // Save current project first
-    saveState();
+    if (projectId === currentProjectId) return;
 
-    // Force sync before switching
-    if (syncWorker) {
-        syncWorker.postMessage({ type: 'forceSync' });
-    }
+    // Save current project first
+    await saveState({ immediate: true });
 
     currentProjectId = projectId;
-    saveProjectsMeta();
+    projectStorageReady = false;
 
     // Reset and load new project
     resetStateToDefaults();
     await loadState();
+    projectStorageReady = true;
 
     if (!state.name) {
         const targetProject = projects.find(p => p.id === projectId);
         if (targetProject) state.name = targetProject.name;
-    }
-
-    // Update sync worker with new project
-    if (syncWorker) {
-        syncWorker.postMessage({
-            type: 'updateConfig',
-            apiBaseURL: location.origin,
-            projectId: currentProjectId,
-            lastRemoteVersion: state._remoteVersion
-        });
     }
 
     syncUIWithState();
@@ -2246,12 +2172,21 @@ async function switchProject(projectId) {
 
 // Create a new project
 async function createProject(name) {
+    await saveState({ immediate: true });
+
     const id = 'project_' + Date.now();
-    state.name = name;
     projects.push({ id, name, screenshotCount: 0 });
-    saveProjectsMeta();
-    await switchProject(id);
+    currentProjectId = id;
+    resetStateToDefaults();
+    state.name = name;
+    projectStorageReady = true;
+    await saveState({ immediate: true, force: true });
+
+    syncUIWithState();
+    updateScreenshotList();
+    updateGradientStopsUI();
     updateProjectSelector();
+    updateCanvas();
 }
 
 // Rename current project
@@ -2261,7 +2196,6 @@ function renameProject(newName) {
     if (project) {
         project.name = newName;
     }
-    saveProjectsMeta();
     saveState();
     updateProjectSelector();
 }
@@ -2274,6 +2208,8 @@ async function deleteProject() {
     }
 
     const projectIdToDelete = currentProjectId;
+    cancelPendingSave(projectIdToDelete);
+    await flushProjectSave();
 
     // Remove from projects list
     const index = projects.findIndex(p => p.id === projectIdToDelete);
@@ -2281,39 +2217,20 @@ async function deleteProject() {
         projects.splice(index, 1);
     }
 
-    // Delete from IndexedDB
-    if (db) {
-        const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
-        const store = transaction.objectStore(PROJECTS_STORE);
-        store.delete(projectIdToDelete);
-    }
-
-    // Delete from server (fire and forget)
     if (typeof apiDeleteProject === 'function') {
-        apiDeleteProject(projectIdToDelete);
+        await apiDeleteProject(projectIdToDelete);
     }
 
-    // Switch to first available project WITHOUT calling switchProject
-    // (switchProject calls saveState() which would re-create the deleted project's data)
     const targetProjectId = projects[0].id;
     currentProjectId = targetProjectId;
-    saveProjectsMeta();
+    projectStorageReady = false;
     resetStateToDefaults();
     await loadState();
+    projectStorageReady = true;
 
     if (!state.name) {
         const targetProject = projects.find(p => p.id === targetProjectId);
         if (targetProject) state.name = targetProject.name;
-    }
-
-    // Update sync worker with new project
-    if (syncWorker) {
-        syncWorker.postMessage({
-            type: 'updateConfig',
-            apiBaseURL: location.origin,
-            projectId: currentProjectId,
-            lastRemoteVersion: state._remoteVersion
-        });
     }
 
     syncUIWithState();
@@ -2324,43 +2241,36 @@ async function deleteProject() {
 }
 
 async function duplicateProject(sourceProjectId, customName) {
-    if (!db) return;
+    await saveState({ immediate: true });
 
-    const transaction = db.transaction([PROJECTS_STORE], 'readonly');
-    const store = transaction.objectStore(PROJECTS_STORE);
-    const request = store.get(sourceProjectId);
+    if (typeof apiLoadProject !== 'function' || typeof apiSaveProject !== 'function') return;
 
-    return new Promise((resolve) => {
-        request.onsuccess = async () => {
-            const projectData = request.result;
-            if (!projectData) {
-                await showAppAlert('Could not read project data', 'error');
-                resolve();
-                return;
-            }
+    const projectData = await apiLoadProject(sourceProjectId);
+    if (!projectData) {
+        await showAppAlert('Could not read project data', 'error');
+        return;
+    }
 
-            const newId = 'project_' + Date.now();
-            const sourceProject = projects.find(p => p.id === sourceProjectId);
-            const newName = customName || (sourceProject ? sourceProject.name : 'Project') + ' (Copy)';
+    const newId = 'project_' + Date.now();
+    const sourceProject = projects.find(p => p.id === sourceProjectId);
+    const newName = customName || (sourceProject ? sourceProject.name : 'Project') + ' (Copy)';
 
-            const clonedData = JSON.parse(JSON.stringify(projectData));
-            clonedData.id = newId;
-            clonedData.name = newName;
+    const clonedData = JSON.parse(JSON.stringify(projectData));
+    delete clonedData._serverVersion;
+    clonedData.id = newId;
+    clonedData.name = newName;
+    clonedData._version = Date.now();
 
-            projects.push({ id: newId, name: newName, screenshotCount: clonedData.screenshots?.length || 0 });
-            saveProjectsMeta();
+    await replaceProjectDataURLs(clonedData);
+    const result = await apiSaveProject(newId, clonedData);
+    if (!result) {
+        await showAppAlert('Could not duplicate project', 'error');
+        return;
+    }
 
-            const writeTransaction = db.transaction([PROJECTS_STORE], 'readwrite');
-            const writeStore = writeTransaction.objectStore(PROJECTS_STORE);
-            writeStore.put(clonedData);
-
-            writeTransaction.oncomplete = async () => {
-                await switchProject(newId);
-                updateProjectSelector();
-                resolve();
-            };
-        };
-    });
+    projects.push({ id: newId, name: newName, screenshotCount: clonedData.screenshots?.length || 0 });
+    await switchProject(newId);
+    updateProjectSelector();
 }
 
 function duplicateScreenshot(index) {
@@ -4092,7 +4002,7 @@ function setupEventListeners() {
             if (duplicateFromId) {
                 await duplicateProject(duplicateFromId, name);
             } else {
-                createProject(name);
+                await createProject(name);
             }
         } else if (mode === 'rename') {
             renameProject(name);
@@ -4119,18 +4029,34 @@ function setupEventListeners() {
 
     // Export project backup
     document.getElementById('export-project-btn').addEventListener('click', async () => {
-        if (!db) return;
         try {
-            const dump = {};
-            for (const name of db.objectStoreNames) {
-                const tx = db.transaction(name, 'readonly');
-                const store = tx.objectStore(name);
-                dump[name] = await new Promise((resolve) => {
-                    const req = store.getAll();
-                    req.onsuccess = () => resolve(req.result);
-                    req.onerror = () => resolve([]);
-                });
+            await saveState({ immediate: true });
+
+            const projectList = typeof apiListProjects === 'function'
+                ? (await apiListProjects()) || projects
+                : projects;
+
+            const projectRecords = [];
+            if (typeof apiLoadProject === 'function') {
+                for (const project of projectList) {
+                    const record = await apiLoadProject(project.id);
+                    if (record) {
+                        delete record._serverVersion;
+                        projectRecords.push(record);
+                    }
+                }
             }
+
+            const dump = {
+                version: 1,
+                storage: 'api',
+                projects: projectRecords,
+                meta: [
+                    { key: 'projects', value: projectList },
+                    { key: 'currentProject', value: currentProjectId }
+                ]
+            };
+
             const json = JSON.stringify(dump, null, 2);
             const blob = new Blob([json], { type: 'application/json' });
             const a = document.createElement('a');
@@ -4151,50 +4077,55 @@ function setupEventListeners() {
     });
     importInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
-        if (!file || !db) return;
+        if (!file) return;
         try {
+            if (typeof apiSaveProject !== 'function') {
+                throw new Error('Project API is unavailable');
+            }
+
             const text = await file.text();
             const dump = JSON.parse(text);
+            const records = Array.isArray(dump)
+                ? dump
+                : (Array.isArray(dump.projects) ? dump.projects : []);
 
-            // Phase 1: upload images and replace data URLs (outside any transaction)
-            for (const record of (dump[PROJECTS_STORE] || [])) {
-                if (record.screenshots) {
-                    for (const screenshot of record.screenshots) {
-                        if (screenshot.src && screenshot.src.startsWith('data:')) {
-                            const blob = dataURLToBlob(screenshot.src);
-                            const imgFile = new File([blob], screenshot.name || 'screenshot.png');
-                            const url = await uploadImageToServer(imgFile);
-                            if (url) screenshot.src = url;
-                        }
-                        if (screenshot.localizedImages) {
-                            for (const langData of Object.values(screenshot.localizedImages)) {
-                                if (langData.src && langData.src.startsWith('data:')) {
-                                    const blob = dataURLToBlob(langData.src);
-                                    const imgFile = new File([blob], langData.name || 'screenshot.png');
-                                    const url = await uploadImageToServer(imgFile);
-                                    if (url) langData.src = url;
-                                }
-                            }
-                        }
-                    }
-                }
+            if (records.length === 0) {
+                throw new Error('No projects found in backup');
             }
 
-            // Phase 2: write all records to IndexedDB
-            for (const storeName of Object.keys(dump)) {
-                if (!db.objectStoreNames.contains(storeName)) continue;
-                const tx = db.transaction(storeName, 'readwrite');
-                const store = tx.objectStore(storeName);
-                for (const record of dump[storeName]) {
-                    store.put(record);
+            const importedIds = [];
+            for (const record of records) {
+                if (!record.id) {
+                    record.id = 'project_' + Date.now() + '_' + importedIds.length;
                 }
-                await new Promise((resolve, reject) => {
-                    tx.oncomplete = resolve;
-                    tx.onerror = () => reject(tx.error);
-                });
+                delete record._serverVersion;
+                record._version = Date.now() + importedIds.length;
+                await replaceProjectDataURLs(record);
+
+                const result = await apiSaveProject(record.id, record);
+                if (result) importedIds.push(record.id);
             }
-            alert('Import complete! Reloading...');
-            location.reload();
+
+            if (importedIds.length === 0) {
+                throw new Error('No projects could be imported');
+            }
+
+            await loadProjectsFromServer();
+            const metaCurrent = Array.isArray(dump.meta)
+                ? dump.meta.find(item => item.key === 'currentProject')?.value
+                : null;
+            currentProjectId = importedIds.includes(metaCurrent) ? metaCurrent : importedIds[0];
+            projectStorageReady = false;
+            resetStateToDefaults();
+            await loadState();
+            projectStorageReady = true;
+
+            syncUIWithState();
+            updateScreenshotList();
+            updateGradientStopsUI();
+            updateProjectSelector();
+            updateCanvas();
+            alert('Import complete!');
         } catch (e) {
             console.error('Import failed:', e);
             alert('Import failed: ' + e.message);
