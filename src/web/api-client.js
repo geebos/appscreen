@@ -71,6 +71,32 @@ async function apiUploadImage(file, projectId) {
     }
 }
 
+async function apiLoadProject(id) {
+    try {
+        const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`);
+
+        if (resp.status === 401) {
+            window.location.href = '/login.html';
+            return null;
+        }
+
+        if (resp.status === 404) {
+            return null;
+        }
+
+        if (!resp.ok) {
+            throw new Error(`Error ${resp.status}`);
+        }
+
+        const data = await resp.json();
+        const serverVersion = resp.headers.get('X-Server-Version');
+        return { ...data, _serverVersion: serverVersion ? Number(serverVersion) : data._version };
+    } catch (e) {
+        console.warn('apiLoadProject failed:', e.message);
+        return null;
+    }
+}
+
 async function apiDeleteImage(id) {
     try {
         const resp = await fetch(`/api/images/${encodeURIComponent(id)}`, {

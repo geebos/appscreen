@@ -78,6 +78,19 @@ app.delete('/api/projects/:id', async (req, res) => {
     }
 });
 
+app.get('/api/projects/:id', async (req, res) => {
+    try {
+        const data = storage.loadProject(req.params.id);
+        if (!data) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+        res.set('X-Server-Version', String(data._version || 0)).json(data);
+    } catch (err) {
+        console.error('Error loading project:', err);
+        res.status(500).json({ error: 'Failed to load project' });
+    }
+});
+
 // ===== Image API =====
 
 app.post('/api/images/upload', upload.single('file'), async (req, res) => {

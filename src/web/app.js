@@ -1607,12 +1607,58 @@ function initSyncWorker() {
     }
 }
 
+// Pull latest project data from server on init
+async function pullLatestFromServer() {
+    if (!db || typeof apiLoadProject !== 'function') return;
+
+    try {
+        const serverData = await apiLoadProject(currentProjectId);
+        if (!serverData) return; // 404 or network error
+
+        const serverVersion = serverData._serverVersion || serverData._version || 0;
+
+        if (serverVersion <= state._remoteVersion) {
+            // Server data is not newer, skip
+            return;
+        }
+
+        console.log(`Pulling server data (v${serverVersion} > local v${state._remoteVersion})`);
+
+        // Save server data to IndexedDB
+        const tx = db.transaction([PROJECTS_STORE], 'readwrite');
+        const store = tx.objectStore(PROJECTS_STORE);
+        delete serverData._serverVersion;
+        store.put(serverData);
+
+        // Update remote version in meta
+        state._remoteVersion = serverVersion;
+        const metaTx = db.transaction([META_STORE], 'readwrite');
+        const metaStore = metaTx.objectStore(META_STORE);
+        metaStore.put({ key: 'remoteVersion_' + currentProjectId, value: serverVersion });
+
+        // Wait for writes to complete
+        await new Promise(resolve => {
+            tx.oncomplete = () => {
+                metaTx.oncomplete = resolve;
+            };
+        });
+
+        // Reload state from IndexedDB
+        await loadState();
+        syncUIWithState();
+        updateCanvas();
+    } catch (e) {
+        console.warn('pullLatestFromServer failed:', e);
+    }
+}
+
 // Initialize
 async function init() {
     try {
         await openDatabase();
         await loadProjectsMeta();
         await loadState();
+        await pullLatestFromServer();
         initSyncWorker();
         syncUIWithState();
         updateCanvas();
