@@ -15,8 +15,8 @@ RUN npm ci --production
 # Copy application code
 COPY src/ src/
 
-# Create data directory for runtime storage
-RUN mkdir -p /app/data/projects /app/data/images /app/data/sessions
+# Create data directories for runtime storage
+RUN mkdir -p /app/data/projects /app/data/images /app/data/fonts
 
 # Expose port 80
 EXPOSE 80

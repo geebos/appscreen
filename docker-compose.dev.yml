@@ -12,5 +12,10 @@ services:
       - AUTH_USERNAME=${AUTH_USERNAME:-admin}
       - AUTH_PASSWORD=${AUTH_PASSWORD:-admin}
     volumes:
-      - ./data:/app/data
-      - ./src/web:/app/src/web
+      # Persists projects, uploaded images, custom fonts, and auth sessions.
+      - type: bind
+        source: ./data
+        target: /app/data
+      - type: bind
+        source: ./src/web
+        target: /app/src/web

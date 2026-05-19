@@ -71,6 +71,54 @@ async function apiUploadImage(file, projectId) {
     }
 }
 
+async function apiUploadFont(file, projectId, name) {
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('projectId', projectId);
+        if (name) formData.append('name', name);
+
+        const resp = await fetch('/api/fonts/upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (resp.status === 401) {
+            window.location.href = '/login.html';
+            return null;
+        }
+
+        if (!resp.ok) {
+            throw new Error(`Error ${resp.status}`);
+        }
+
+        return await resp.json();
+    } catch (e) {
+        console.warn('apiUploadFont failed:', e.message);
+        return null;
+    }
+}
+
+async function apiListFonts() {
+    try {
+        const resp = await fetch('/api/fonts', { credentials: 'same-origin' });
+
+        if (resp.status === 401) {
+            window.location.href = '/login.html';
+            return null;
+        }
+
+        if (!resp.ok) {
+            throw new Error(`Error ${resp.status}`);
+        }
+
+        return await resp.json();
+    } catch (e) {
+        console.warn('apiListFonts failed:', e.message);
+        return null;
+    }
+}
+
 async function apiLoadProject(id) {
     try {
         const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`);

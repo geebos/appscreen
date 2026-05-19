@@ -1991,13 +1991,15 @@ input[type="range"]::-webkit-slider-thumb {
 
 .font-picker-categories {
     display: flex;
+    flex-wrap: wrap;
     gap: 4px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border-color);
 }
 
 .font-category {
-    padding: 6px 12px;
+    flex: 1 1 auto;
+    padding: 6px 10px;
     background: transparent;
     border: 1px solid var(--border-color);
     border-radius: 6px;
@@ -2479,6 +2481,15 @@ input[type="range"]::-webkit-slider-thumb {
 .settings-btn:hover {
     background: var(--bg-primary);
     color: var(--text-primary);
+}
+
+.settings-btn.loading {
+    opacity: 0.65;
+    pointer-events: none;
+}
+
+.settings-btn.loading svg {
+    animation: spin 1s linear infinite;
 }
 
 .sidebar-header-buttons {

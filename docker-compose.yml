@@ -11,7 +11,10 @@ services:
       - AUTH_USERNAME=${AUTH_USERNAME:-}
       - AUTH_PASSWORD=${AUTH_PASSWORD:-}
     volumes:
-      - ./data:/app/data
+      # Persists projects, uploaded images, custom fonts, and auth sessions.
+      - type: bind
+        source: ./data
+        target: /app/data
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
       interval: 30s

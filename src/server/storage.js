@@ -4,6 +4,7 @@ const crypto = require('crypto');
 
 const PROJECTS_DIR = path.join(__dirname, '..', '..', 'data', 'projects');
 const IMAGES_DIR = path.join(__dirname, '..', '..', 'data', 'images');
+const FONTS_DIR = path.join(__dirname, '..', '..', 'data', 'fonts');
 const MAX_VERSIONS = 10;
 
 function ensureDir(dir) {
@@ -88,6 +89,86 @@ function deleteImage(id) {
     }
 }
 
+// ===== Font storage =====
+
+function getFontDisplayName(originalName) {
+    return (originalName || 'Custom Font')
+        .replace(/\.[^.]+$/, '')
+        .replace(/[_-]+/g, ' ')
+        .trim() || 'Custom Font';
+}
+
+function saveFont(buffer, originalName, mimeType, displayName) {
+    const id = md5Hash(buffer);
+    ensureDir(FONTS_DIR);
+
+    const filepath = path.join(FONTS_DIR, id);
+    const metadataPath = path.join(FONTS_DIR, `${id}.json`);
+    const metadata = {
+        id,
+        name: displayName || getFontDisplayName(originalName),
+        originalName,
+        mimeType,
+        size: buffer.length
+    };
+
+    fs.writeFileSync(filepath, buffer);
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
+    return metadata;
+}
+
+function loadFont(id) {
+    const filepath = path.join(FONTS_DIR, id);
+    if (!fs.existsSync(filepath)) return null;
+
+    const metadataPath = path.join(FONTS_DIR, `${id}.json`);
+    let metadata = { id, originalName: id, mimeType: 'font/woff2' };
+    if (fs.existsSync(metadataPath)) {
+        try {
+            metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+        } catch (e) {
+            metadata = { id, originalName: id, mimeType: 'font/woff2' };
+        }
+    }
+
+    return {
+        buffer: fs.readFileSync(filepath),
+        metadata
+    };
+}
+
+function deleteFont(id) {
+    const filepath = path.join(FONTS_DIR, id);
+    const metadataPath = path.join(FONTS_DIR, `${id}.json`);
+    if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+    if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
+}
+
+function listFonts() {
+    ensureDir(FONTS_DIR);
+
+    return fs.readdirSync(FONTS_DIR)
+        .filter(f => f.endsWith('.json'))
+        .map(f => {
+            try {
+                const metadata = JSON.parse(fs.readFileSync(path.join(FONTS_DIR, f), 'utf-8'));
+                const fontPath = path.join(FONTS_DIR, metadata.id || f.replace(/\.json$/, ''));
+                if (!fs.existsSync(fontPath)) return null;
+                return {
+                    id: metadata.id || f.replace(/\.json$/, ''),
+                    name: metadata.name || getFontDisplayName(metadata.originalName),
+                    originalName: metadata.originalName,
+                    mimeType: metadata.mimeType,
+                    size: metadata.size || fs.statSync(fontPath).size
+                };
+            } catch (e) {
+                return null;
+            }
+        })
+        .filter(Boolean)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+}
+
 function listProjects() {
     ensureDir(PROJECTS_DIR);
 
@@ -142,5 +223,9 @@ module.exports = {
     listProjects,
     saveImage,
     loadImage,
-    deleteImage
+    deleteImage,
+    saveFont,
+    loadFont,
+    deleteFont,
+    listFonts
 };

@@ -56,6 +56,32 @@ const upload = multer({
     limits: { fileSize: 50 * 1024 * 1024 } // 50MB
 });
 
+const FONT_MIME_BY_EXT = {
+    '.ttf': 'font/ttf',
+    '.otf': 'font/otf',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2'
+};
+
+function getFontMimeType(filename, fallback) {
+    const ext = path.extname(filename || '').toLowerCase();
+    return FONT_MIME_BY_EXT[ext] || fallback || 'application/octet-stream';
+}
+
+function isSupportedFont(filename, mimeType) {
+    const ext = path.extname(filename || '').toLowerCase();
+    return Boolean(FONT_MIME_BY_EXT[ext]) || /^font\//.test(mimeType || '') || /^application\/(?:font|x-font)/.test(mimeType || '');
+}
+
+function getImageMimeType(buffer) {
+    if (!buffer || buffer.length < 12) return 'application/octet-stream';
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'image/png';
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return 'image/gif';
+    if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+    return 'application/octet-stream';
+}
+
 // ===== Project API =====
 
 app.get('/api/projects', async (req, res) => {
@@ -123,7 +149,10 @@ app.get('/api/images/:id', async (req, res) => {
         if (!buf) {
             return res.status(404).json({ error: 'Image not found' });
         }
-        res.set('Cache-Control', 'public, max-age=31536000').send(buf);
+        res
+            .set('Cache-Control', 'public, max-age=31536000')
+            .set('Content-Type', getImageMimeType(buf))
+            .send(buf);
     } catch (err) {
         console.error('Error loading image:', err);
         res.status(500).json({ error: 'Failed to load image' });
@@ -137,6 +166,78 @@ app.delete('/api/images/:id', async (req, res) => {
     } catch (err) {
         console.error('Error deleting image:', err);
         res.status(500).json({ error: 'Failed to delete image' });
+    }
+});
+
+// ===== Font API =====
+
+app.post('/api/fonts/upload', upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        if (!isSupportedFont(req.file.originalname, req.file.mimetype)) {
+            return res.status(400).json({ error: 'Unsupported font file' });
+        }
+
+        const mimeType = getFontMimeType(req.file.originalname, req.file.mimetype);
+        const result = storage.saveFont(req.file.buffer, req.file.originalname, mimeType, req.body?.name);
+        res.json({
+            id: result.id,
+            url: `/api/fonts/${result.id}`,
+            name: result.name,
+            fileName: result.originalName,
+            type: result.mimeType,
+            size: result.size
+        });
+    } catch (err) {
+        console.error('Error uploading font:', err);
+        res.status(500).json({ error: 'Failed to upload font' });
+    }
+});
+
+app.get('/api/fonts', async (req, res) => {
+    try {
+        const fonts = storage.listFonts().map(font => ({
+            id: font.id,
+            url: `/api/fonts/${font.id}`,
+            name: font.name,
+            fileName: font.originalName,
+            type: font.mimeType,
+            size: font.size
+        }));
+        res.json(fonts);
+    } catch (err) {
+        console.error('Error listing fonts:', err);
+        res.status(500).json({ error: 'Failed to list fonts' });
+    }
+});
+
+app.get('/api/fonts/:id', async (req, res) => {
+    try {
+        const font = storage.loadFont(req.params.id);
+        if (!font) {
+            return res.status(404).json({ error: 'Font not found' });
+        }
+
+        res
+            .set('Cache-Control', 'public, max-age=31536000, immutable')
+            .set('Content-Type', getFontMimeType(font.metadata.originalName, font.metadata.mimeType))
+            .send(font.buffer);
+    } catch (err) {
+        console.error('Error loading font:', err);
+        res.status(500).json({ error: 'Failed to load font' });
+    }
+});
+
+app.delete('/api/fonts/:id', async (req, res) => {
+    try {
+        storage.deleteFont(req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error deleting font:', err);
+        res.status(500).json({ error: 'Failed to delete font' });
     }
 });
 
