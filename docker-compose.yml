@@ -1,6 +1,8 @@
 services:
   appscreen:
-    image: ghcr.io/yuzu-hub/appscreen:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: appscreen
     ports:
       - "${PORT}:80"
