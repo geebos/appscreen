@@ -2,14 +2,13 @@
 
 A free, open-source tool for creating beautiful App Store screenshots with customizable backgrounds, text overlays, and 3D device mockups.
 
-
 **[Start using it now. Hosted on GitHub Pages](https://yuzu-hub.github.io/appscreen/)**
 
-![App Store Screenshot Generator](img/screenshot-generator.png)
+![App Store Screenshot Generator](src/web/img/screenshot-generator.png)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> 🍋 **Built by [YuzuHub](https://yuzuhub.com)** — We build smart AI products in Düsseldorf, Germany. Check out [yuzu.chat](https://yuzu.chat), [Eno](https://eno.yuzuhub.com), [VoltPlan](https://voltplan.app) and more.
+> Built by [YuzuHub](https://yuzuhub.com) — We build smart AI products in Dusseldorf, Germany. Check out [yuzu.chat](https://yuzu.chat), [Eno](https://eno.yuzuhub.com), [VoltPlan](https://voltplan.app) and more.
 
 ## Features
 
@@ -27,7 +26,7 @@ A free, open-source tool for creating beautiful App Store screenshots with custo
 
 ### Device Mockups
 - **2D Mode**: Position, scale, rotate, and adjust corner radius of screenshots
-- **3D Mode**: Interactive iPhone 15 Pro Max 3D mockup with drag-to-rotate
+- **3D Mode**: Interactive iPhone 15 Pro Max and Samsung Galaxy S25 Ultra 3D mockup with drag-to-rotate
 - **Position Presets**: Centered, bleed, tilt left/right, perspective, and more
 - **Shadow Effects**: Customizable drop shadows with color, blur, opacity, and offset
 - **Border Effects**: Add borders around screenshots with adjustable width and opacity
@@ -36,7 +35,7 @@ A free, open-source tool for creating beautiful App Store screenshots with custo
 - **Headlines & Subheadlines**: Separate controls with enable/disable toggles
 - **Font Picker**: Access to 1500+ Google Fonts with search and preview
 - **Text Styling**: Font weight, italic, underline, strikethrough options
-- **Positioning**: Top, center, or bottom placement with offset control
+- **Positioning**: Top or bottom placement with offset control
 - **Line Height**: Adjustable spacing for multi-line text
 
 ### Multi-Language Support
@@ -49,16 +48,23 @@ A free, open-source tool for creating beautiful App Store screenshots with custo
 - **Multi-Language Export**: Export current language only or all languages in separate folders
 
 ### Project Management
-- **Multiple Projects**: Create, rename, and delete projects
-- **Auto-Save**: All changes saved automatically to browser storage
+- **Multiple Projects**: Create, rename, delete, and duplicate projects
+- **Auto-Save**: Local IndexedDB + background server sync via Web Worker
+- **Export/Import**: Backup and restore projects as JSON files
 - **Screenshot Count**: See screenshot counts in project selector
 
+### Server & Sync
+- **Backend API**: Express.js server with REST API for projects and images
+- **Image Storage**: MD5-based deduplication, relative path URLs
+- **Background Sync**: Web Worker pushes projects to server in background, never blocks UI
+- **Optional Auth**: Password-protect your instance via environment variables
+
 ### User Interface
-- **Dark Theme**: Easy on the eyes for extended editing sessions
+- **Dark/Light/Auto Theme**: Adapts to system preference or manual toggle
 - **Side Preview Carousel**: See adjacent screenshots while editing
-- **Drag & Drop**: Reorder screenshots by dragging
+- **Drag & Drop**: Reorder screenshots and elements by dragging
 - **Collapsible Sections**: Clean UI with expandable settings panels
-- **Tab Persistence**: Remembers your active tab between sessions
+- **Elements System**: Add graphics, text, emoji, and icons as overlay layers
 
 ## Getting Started
 
@@ -68,80 +74,77 @@ Visit **[yuzu-hub.github.io/appscreen](https://yuzu-hub.github.io/appscreen/)** 
 
 ---
 
-### Want to Develop & Customize?
-
-#### Option 1: With Claude Desktop (Easiest - No Technical Knowledge Required)
-
-Perfect for non-technical users who want to run and modify the tool locally with AI assistance:
-
-1. **Install GitHub Desktop**
-   - Download from [desktop.github.com](https://desktop.github.com)
-   - Install and sign in with your GitHub account
-
-2. **Clone this repository**
-   - Click the green "Code" button above → "Open with GitHub Desktop"
-   - Choose where to save it (e.g., Documents folder)
-
-3. **Install Claude Desktop**
-   - Download from [claude.ai/download](https://claude.ai/download)
-   - Sign in with your Anthropic account
-
-4. **Open in Claude Desktop**
-   - Open Claude Desktop app
-   - Click the "Code" tab at the top
-   - Click "Open Folder" and select the cloned repository folder
-
-5. **Start the app**
-   - Simply type: **"start the app"**
-   - Claude will automatically start the server and tell you which URL to open in your browser
-   - Claude monitors the server and reports any issues
-
-6. **Make changes**
-   - Ask Claude to modify features, fix bugs, or add functionality
-   - Claude will show you the proposed commit message before committing
-   - All changes are automatically saved to Git
-
-No command line, no technical setup - just chat with Claude!
-
-#### Option 2: Run Locally (Command Line)
-
-Since this app uses IndexedDB for persistence, you need to serve it through a local web server:
+### Self-Hosted (Docker)
 
 ```bash
-# Using Python
-cd appscreen
-python3 -m http.server 8000
-
-# Using Node.js
-npx serve .
-```
-
-Then open `http://localhost:8000` in your browser.
-
-#### Option 3: VS Code Live Server
-
-If you have the "Live Server" extension installed in VS Code, right-click `index.html` and select "Open with Live Server".
-
-#### Option 4: Docker
-
-Run the pre-built Docker image from GitHub Container Registry:
-
-```bash
-# Using Docker directly
+# Pull and run
 docker run -d -p 8080:80 ghcr.io/yuzu-hub/appscreen:latest
 
-# Using Docker Compose
+# With auth
+docker run -d -p 8080:80 \
+  -e AUTH_USERNAME=admin \
+  -e AUTH_PASSWORD=mypassword \
+  -v ./data:/app/data \
+  ghcr.io/yuzu-hub/appscreen:latest
+
+# Or with Docker Compose
+echo "AUTH_USERNAME=admin" > .env
+echo "AUTH_PASSWORD=mypassword" >> .env
 docker compose up -d
 ```
 
-Then open `http://localhost:8080` in your browser.
+Then open `http://localhost:8080`.
 
-#### Building locally
-
-If you want to build the image yourself:
+### Development Setup
 
 ```bash
-docker compose -f docker-compose.build.yml up -d
+# Install dependencies
+npm install
+
+# Start dev server (with auto-reload)
+npm run dev
+
+# Or production
+npm start
+
+# With auth
+AUTH_USERNAME=admin AUTH_PASSWORD=mypassword npm start
+```
+
+The server starts on port 80 by default (set `PORT` env var to change).
+
+### Project Structure
+
+```
+src/
+├── web/                # Frontend (browser)
+│   ├── index.html      # Main application
+│   ├── login.html      # Auth login page
+│   ├── app.js          # Core application logic
+│   ├── styles.css      # Styling
+│   ├── api-client.js   # Server API client
+│   ├── sync-worker.js  # Background sync worker
+│   ├── img/            # Icons and assets
+│   └── models/         # 3D device models
+│
+└── server/             # Backend (Node.js/Express)
+    ├── server.js       # Express server
+    ├── storage.js      # JSON file storage
+    └── auth.js         # Auth with session management
+
+data/                   # Runtime data (git-ignored)
+├── projects/           # Project snapshots (keeps last 10)
+├── images/             # Uploaded images (MD5-named)
+└── sessions.json       # Auth sessions
+```
+
+### Just Frontend
+
+For frontend-only development without the backend:
+
+```bash
+cd src/web
+python3 -m http.server 8000
 ```
 
 ## Usage
@@ -150,7 +153,7 @@ docker compose -f docker-compose.build.yml up -d
 2. **Choose Output Size**: Select the target device size from the sidebar
 3. **Customize Background**: Choose gradient, solid color, or image background
 4. **Position Screenshot**: Use presets or manually adjust scale, position, and rotation
-5. **Switch to 3D** (optional): Enable 3D mode for interactive iPhone mockup
+5. **Switch to 3D** (optional): Enable 3D mode for interactive device mockup
 6. **Add Text**: Enter your headline and optional subheadline
 7. **Export**: Download the current screenshot or export all at once as ZIP
 
@@ -168,14 +171,17 @@ Your API key is stored locally in your browser and only sent to the respective A
 
 ## Tech Stack
 
-- Vanilla JavaScript (no frameworks)
+- Vanilla JavaScript (no frameworks) for frontend
 - HTML5 Canvas for 2D rendering
 - Three.js for 3D device mockups
 - IndexedDB for local storage
+- Web Worker for background server sync
+- Express.js for backend REST API
+- JSON file storage (no database required)
 - JSZip for batch export
 - Google Fonts API for font picker
 - Claude/OpenAI/Google APIs for translations
-- Docker + nginx for containerized deployment
+- Docker for containerized deployment
 
 ## Apps Using This Project
 
@@ -189,7 +195,7 @@ Built something with this tool? Add your app to the list by submitting a pull re
 | Trakz Sales Tracker | Manage sales for restaurants and small businesses | [apple.com](https://apps.apple.com/us/app/trakz-sales-tracker/id6748954468) |
 | AI Soccer Insights Football IQ | AI-powered football predictions and insights | [apple.com](https://apps.apple.com/us/app/ai-soccer-insights-football-iq/id6592649804) |
 | Navegatime | time tracking for workers and business functions | [play.google.com](https://play.google.com/store/apps/details?id=com.companyname.NavegaTime) |
-| Sommo | Your personal wine journey — scan labels, learn wine, and build your tasting journal | [sommo.app](https://sommo.app) |
+| Sommo | Your personal wine journey - scan labels, learn wine, and build your tasting journal | [sommo.app](https://sommo.app) |
 | Dandelion: Write and Let Go | An ephemeral journal for writing to let go, not save. | [apple.com](https://apps.apple.com/us/app/dandelion-write-and-let-go/id6757363901) |
 | *Your app here* | *Submit a PR to add your app* | *Your app link* |
 
@@ -199,9 +205,8 @@ MIT License - feel free to use, modify, and distribute.
 
 ## Credits
 - **Samsung Galaxy S25 Ultra 3D Model** by [mistJS](https://sketchfab.com/mistjs) - Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-
 - **iPhone 15 Pro Max 3D Model** by [MajdyModels](https://sketchfab.com/majdymodels) - Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 ## Author
 
-Proudly vibe coded by [Stefan](https://github.com/BlackMac) at [YuzuHub](https://yuzuhub.com/en) — building smart AI products from Düsseldorf, Germany.
+Proudly vibe coded by [Stefan](https://github.com/BlackMac) at [YuzuHub](https://yuzuhub.com/en) — building smart AI products from Dusseldorf, Germany.
