@@ -4043,6 +4043,32 @@ function setupEventListeners() {
         try {
             const text = await file.text();
             const dump = JSON.parse(text);
+
+            // Phase 1: upload images and replace data URLs (outside any transaction)
+            for (const record of (dump[PROJECTS_STORE] || [])) {
+                if (record.screenshots) {
+                    for (const screenshot of record.screenshots) {
+                        if (screenshot.src && screenshot.src.startsWith('data:')) {
+                            const blob = dataURLToBlob(screenshot.src);
+                            const imgFile = new File([blob], screenshot.name || 'screenshot.png');
+                            const url = await uploadImageToServer(imgFile);
+                            if (url) screenshot.src = url;
+                        }
+                        if (screenshot.localizedImages) {
+                            for (const langData of Object.values(screenshot.localizedImages)) {
+                                if (langData.src && langData.src.startsWith('data:')) {
+                                    const blob = dataURLToBlob(langData.src);
+                                    const imgFile = new File([blob], langData.name || 'screenshot.png');
+                                    const url = await uploadImageToServer(imgFile);
+                                    if (url) langData.src = url;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Phase 2: write all records to IndexedDB
             for (const storeName of Object.keys(dump)) {
                 if (!db.objectStoreNames.contains(storeName)) continue;
                 const tx = db.transaction(storeName, 'readwrite');

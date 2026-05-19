@@ -15,6 +15,7 @@
 | 背景图片 | `app.js:4461` | 右侧面板 Background → Image → Click to upload | `e.target.files[0]` |
 | 元素图片 | `app.js:2696` | 右侧面板 Elements → Add Graphic 按钮 | `e.target.files[0]` |
 | 翻译图片 | `language-utils.js:362` | 截图语言管理弹窗 | `input.files[0]` |
+| 项目导入 | `app.js:4040` | 侧边栏 Import Project Backup | `dataURLToBlob()` → `new File()` |
 
 ## 核心函数
 
@@ -100,6 +101,18 @@ translation-file-input change (语言管理弹窗)
   2. reader.readAsDataURL(file)             → dataURL
   3. new Image() → img
   4. addLocalizedImage(index, lang, img, uploadUrl || dataURL, file.name)
+```
+
+### 6. 项目导入 (Import Project Backup)
+
+```
+import-project-input change
+  1. 读取 JSON 文件 → 解析 IndexedDB dump
+  2. 遍历每个 project record 的 screenshots[]
+  3. 检查 screenshot.src 是否为 data: URL → dataURLToBlob → uploadImageToServer → 替换
+  4. 检查 localizedImages[lang].src 是否为 data: URL → 同上
+  5. 将替换后的 record 写入 IndexedDB
+  6. location.reload() 使更新生效
 ```
 
 ## 持久化
