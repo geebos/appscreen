@@ -2,6 +2,7 @@
 const state = {
     _version: 0,
     _remoteVersion: 0,
+    projectName: '',
     screenshots: [],
     selectedIndex: 0,
     transferTarget: null, // Index of screenshot waiting to receive style transfer
@@ -1534,8 +1535,8 @@ function updateProjectSelector() {
     // Find current project
     const currentProject = projects.find(p => p.id === currentProjectId) || projects[0];
 
-    // Update trigger display - always use actual state for current project
-    document.getElementById('project-trigger-name').textContent = currentProject.name;
+    // Update trigger display - always use state for current project
+    document.getElementById('project-trigger-name').textContent = state.name || currentProject.name;
     const count = state.screenshots.length;
     document.getElementById('project-trigger-meta').textContent = `${count} screenshot${count !== 1 ? 's' : ''}`;
 
@@ -1652,11 +1653,34 @@ async function pullLatestFromServer() {
     }
 }
 
+// Load project list from server, fallback to local IndexedDB
+async function loadProjectsFromServer() {
+    if (typeof apiListProjects !== 'function') return;
+
+    try {
+        const serverProjects = await apiListProjects();
+        if (serverProjects && serverProjects.length > 0) {
+            projects = serverProjects.map(p => ({
+                id: p.id,
+                name: p.name,
+                screenshotCount: p.screenshotCount
+            }));
+            saveProjectsMeta();
+            return;
+        }
+    } catch (e) {
+        console.warn('Failed to load projects from server:', e);
+    }
+
+    // Fallback to local IndexedDB
+    await loadProjectsMeta();
+}
+
 // Initialize
 async function init() {
     try {
         await openDatabase();
-        await loadProjectsMeta();
+        await loadProjectsFromServer();
         await loadState();
         await pullLatestFromServer();
         initSyncWorker();
@@ -1733,6 +1757,7 @@ function saveState() {
         id: currentProjectId,
         _version: state._version,
         formatVersion: 2, // Version 2: new 3D positioning formula
+        name: state.name || '',
         screenshots: screenshotsToSave,
         selectedIndex: state.selectedIndex,
         outputDevice: state.outputDevice,
@@ -1831,6 +1856,13 @@ function loadState() {
                 const parsed = request.result;
                 if (parsed) {
                     state._version = parsed._version || 0;
+                    state.name = parsed.name || '';
+                    // Backward compat: for old projects without name in state,
+                    // look up name from local projects cache
+                    if (!state.name && parsed.id) {
+                        const meta = projects.find(p => p.id === parsed.id);
+                        state.name = meta ? meta.name : '';
+                    }
 
                     // Load remote version from meta
                     try {
@@ -2084,6 +2116,7 @@ function convertProject() {
 function resetStateToDefaults() {
     state.screenshots = [];
     state.selectedIndex = 0;
+    state.name = '';
     state.outputDevice = 'iphone-6.9';
     state.customWidth = 1320;
     state.customHeight = 2868;
@@ -2189,6 +2222,11 @@ async function switchProject(projectId) {
     resetStateToDefaults();
     await loadState();
 
+    if (!state.name) {
+        const targetProject = projects.find(p => p.id === projectId);
+        if (targetProject) state.name = targetProject.name;
+    }
+
     // Update sync worker with new project
     if (syncWorker) {
         syncWorker.postMessage({
@@ -2209,6 +2247,7 @@ async function switchProject(projectId) {
 // Create a new project
 async function createProject(name) {
     const id = 'project_' + Date.now();
+    state.name = name;
     projects.push({ id, name, screenshotCount: 0 });
     saveProjectsMeta();
     await switchProject(id);
@@ -2217,12 +2256,14 @@ async function createProject(name) {
 
 // Rename current project
 function renameProject(newName) {
+    state.name = newName;
     const project = projects.find(p => p.id === currentProjectId);
     if (project) {
         project.name = newName;
-        saveProjectsMeta();
-        updateProjectSelector();
     }
+    saveProjectsMeta();
+    saveState();
+    updateProjectSelector();
 }
 
 // Delete current project
@@ -2252,10 +2293,34 @@ async function deleteProject() {
         apiDeleteProject(projectIdToDelete);
     }
 
-    // Switch to first available project
+    // Switch to first available project WITHOUT calling switchProject
+    // (switchProject calls saveState() which would re-create the deleted project's data)
+    const targetProjectId = projects[0].id;
+    currentProjectId = targetProjectId;
     saveProjectsMeta();
-    await switchProject(projects[0].id);
+    resetStateToDefaults();
+    await loadState();
+
+    if (!state.name) {
+        const targetProject = projects.find(p => p.id === targetProjectId);
+        if (targetProject) state.name = targetProject.name;
+    }
+
+    // Update sync worker with new project
+    if (syncWorker) {
+        syncWorker.postMessage({
+            type: 'updateConfig',
+            apiBaseURL: location.origin,
+            projectId: currentProjectId,
+            lastRemoteVersion: state._remoteVersion
+        });
+    }
+
+    syncUIWithState();
+    updateScreenshotList();
+    updateGradientStopsUI();
     updateProjectSelector();
+    updateCanvas();
 }
 
 async function duplicateProject(sourceProjectId, customName) {
@@ -2280,6 +2345,7 @@ async function duplicateProject(sourceProjectId, customName) {
 
             const clonedData = JSON.parse(JSON.stringify(projectData));
             clonedData.id = newId;
+            clonedData.name = newName;
 
             projects.push({ id: newId, name: newName, screenshotCount: clonedData.screenshots?.length || 0 });
             saveProjectsMeta();

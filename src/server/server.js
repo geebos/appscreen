@@ -58,6 +58,16 @@ const upload = multer({
 
 // ===== Project API =====
 
+app.get('/api/projects', async (req, res) => {
+    try {
+        const projects = storage.listProjects();
+        res.json(projects);
+    } catch (err) {
+        console.error('Error listing projects:', err);
+        res.status(500).json({ error: 'Failed to list projects' });
+    }
+});
+
 app.put('/api/projects/:id', async (req, res) => {
     try {
         const result = storage.saveProject(req.params.id, req.body);

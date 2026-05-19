@@ -88,10 +88,58 @@ function deleteImage(id) {
     }
 }
 
+function listProjects() {
+    ensureDir(PROJECTS_DIR);
+
+    const entries = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true });
+    const projectList = [];
+
+    for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+
+        const projectId = entry.name;
+        const projectDir = path.join(PROJECTS_DIR, projectId);
+
+        const files = fs.readdirSync(projectDir)
+            .filter(f => f.endsWith('.json'))
+            .sort()
+            .reverse();
+
+        if (files.length === 0) continue;
+
+        const latestFile = files[0];
+        const filePath = path.join(projectDir, latestFile);
+        const stat = fs.statSync(filePath);
+
+        try {
+            const raw = fs.readFileSync(filePath, 'utf-8');
+            const data = JSON.parse(raw);
+
+            projectList.push({
+                id: projectId,
+                name: data.name || 'Untitled',
+                lastModified: stat.mtimeMs,
+                screenshotCount: data.screenshots ? data.screenshots.length : 0
+            });
+        } catch (e) {
+            projectList.push({
+                id: projectId,
+                name: 'Untitled',
+                lastModified: stat.mtimeMs,
+                screenshotCount: 0
+            });
+        }
+    }
+
+    projectList.sort((a, b) => b.lastModified - a.lastModified);
+    return projectList;
+}
+
 module.exports = {
     saveProject,
     loadProject,
     deleteProject,
+    listProjects,
     saveImage,
     loadImage,
     deleteImage

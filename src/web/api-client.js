@@ -114,3 +114,23 @@ async function apiDeleteImage(id) {
         return false;
     }
 }
+
+async function apiListProjects() {
+    try {
+        const resp = await fetch('/api/projects', { credentials: 'same-origin' });
+
+        if (resp.status === 401) {
+            window.location.href = '/login.html';
+            return null;
+        }
+
+        if (!resp.ok) {
+            throw new Error(`Error ${resp.status}`);
+        }
+
+        return await resp.json();
+    } catch (e) {
+        console.warn('apiListProjects failed:', e.message);
+        return null;
+    }
+}
