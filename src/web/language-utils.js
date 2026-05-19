@@ -376,7 +376,10 @@ function handleTranslationFileSelect(event) {
 
     // Upload to server first, with fallback to dataURL
     if (typeof uploadImageToServer === 'function') {
-        uploadImageToServer(file).then(uploadUrl => {
+        uploadImageToServer(file, {
+            title: 'Uploading Translation',
+            status: 'Uploading localized screenshot...'
+        }).then(uploadUrl => {
             const reader = new FileReader();
             reader.onload = (e) => {
                 const img = new Image();

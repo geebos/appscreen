@@ -3582,13 +3582,27 @@ input[type="range"]::-webkit-slider-thumb {
     display: flex;
     align-items: center;
     justify-content: center;
+    position: relative;
     animation: uploadPulse 1.5s ease-in-out infinite;
+}
+
+.upload-overlay-icon::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
 }
 
 .upload-overlay-icon svg {
     width: 24px;
     height: 24px;
     color: var(--accent);
+    position: relative;
+    z-index: 1;
 }
 
 @keyframes uploadPulse {
@@ -3629,6 +3643,10 @@ input[type="range"]::-webkit-slider-thumb {
     transition: width 0.3s ease;
 }
 
+.upload-overlay-fill.complete {
+    background: linear-gradient(90deg, #30d158, #63e683);
+}
+
 .upload-overlay-fill.animating {
     animation: uploadIndeterminate 1.5s ease-in-out infinite;
 }
@@ -3663,10 +3681,20 @@ input[type="range"]::-webkit-slider-thumb {
     font-size: 13px;
     cursor: pointer;
     transition: all 0.15s;
+    align-items: center;
+    justify-content: center;
 }
 
 .upload-overlay-cancel:hover {
     background: var(--bg-primary);
     color: var(--text-primary);
     border-color: #ff453a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .upload-overlay-icon,
+    .upload-overlay-icon::after,
+    .upload-overlay-fill.animating {
+        animation: none;
+    }
 }
