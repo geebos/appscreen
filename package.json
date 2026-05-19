@@ -14,10 +14,16 @@
     "url": "https://github.com/YUZU-Hub/appscreen"
   },
   "scripts": {
+    "start": "node src/server/server.js",
+    "dev": "node --watch src/server/server.js",
     "serve": "python3 -m http.server 8000",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

@@ -1960,11 +1960,32 @@
         </div>
     </div>
 
+    <!-- Upload Progress Overlay -->
+    <div class="upload-overlay" id="upload-overlay">
+        <div class="upload-overlay-card">
+            <div class="upload-overlay-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+            </div>
+            <h3 id="upload-overlay-title">Uploading Image</h3>
+            <p id="upload-overlay-filename">image.png</p>
+            <div class="upload-overlay-bar">
+                <div class="upload-overlay-fill" id="upload-overlay-fill"></div>
+            </div>
+            <p class="upload-overlay-status" id="upload-overlay-status">Uploading...</p>
+            <button class="upload-overlay-cancel" id="upload-overlay-cancel">Cancel</button>
+        </div>
+    </div>
+
     <script src="llm.js"></script>
     <script src="language-utils.js"></script>
     <script src="magical-titles.js"></script>
     <script src="lucide-icons.js"></script>
     <script src="three-renderer.js"></script>
+    <script src="api-client.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

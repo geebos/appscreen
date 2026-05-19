@@ -1,10 +1,18 @@
 services:
   appscreen:
-    image: ghcr.io/yuzu-hub/appscreen:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: appscreen:latest
     container_name: appscreen
     ports:
-      - "8080:80"
+      - "8088:80"
     restart: unless-stopped
+    environment:
+      - AUTH_USERNAME=${AUTH_USERNAME:-admin}
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-admin}
+    volumes:
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
       interval: 30s

@@ -374,16 +374,32 @@ function handleTranslationFileSelect(event) {
         return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-            addLocalizedImage(currentTranslationsIndex, lang, img, e.target.result, file.name);
-            updateScreenshotTranslationsList();
+    // Upload to server first, with fallback to dataURL
+    if (typeof uploadImageToServer === 'function') {
+        uploadImageToServer(file).then(uploadUrl => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    addLocalizedImage(currentTranslationsIndex, lang, img, uploadUrl || e.target.result, file.name);
+                    updateScreenshotTranslationsList();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+    } else {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+                addLocalizedImage(currentTranslationsIndex, lang, img, e.target.result, file.name);
+                updateScreenshotTranslationsList();
+            };
+            img.src = e.target.result;
         };
-        img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+        reader.readAsDataURL(file);
+    }
 
     input.value = '';
 }

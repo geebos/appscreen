@@ -20,17 +20,16 @@ FUNDING.yml
 .DS_Store
 Thumbs.db
 
-# Node/Electron (not needed for web deployment)
+# Node
 node_modules/
-electron/
-package.json
-package-lock.json
 
 # Docker
-Dockerfile
 docker-compose.yml
 docker-compose.build.yml
 .dockerignore
+
+# Tauri
+src-tauri/
 
 # Build artifacts
 *.log

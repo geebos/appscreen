@@ -1,5 +1,7 @@
 // State management
 const state = {
+    _version: 0,
+    _remoteVersion: 0,
     screenshots: [],
     selectedIndex: 0,
     transferTarget: null, // Index of screenshot waiting to receive style transfer
@@ -120,7 +122,14 @@ function getCurrentScreenshot() {
 
 function getBackground() {
     const screenshot = getCurrentScreenshot();
-    return screenshot ? screenshot.background : state.defaults.background;
+    const bg = screenshot ? screenshot.background : state.defaults.background;
+    // Lazy-load background image from stored URL
+    if (bg.imageUrl && !(bg.image instanceof HTMLImageElement && bg.image.src === bg.imageUrl)) {
+        const img = new Image();
+        img.src = bg.imageUrl;
+        bg.image = img;
+    }
+    return bg;
 }
 
 function getScreenshotSettings() {
@@ -1327,6 +1336,10 @@ const META_STORE = 'meta';
 
 let currentProjectId = 'default';
 let projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
+let syncWorker = null;
+
+// Upload state
+let uploadAbortController = null;
 
 function openDatabase() {
     return new Promise((resolve, reject) => {
@@ -1418,6 +1431,101 @@ function saveProjectsMeta() {
     }
 }
 
+// ===== Image Upload Helpers =====
+
+function dataURLToBlob(dataURL) {
+    const parts = dataURL.split(',');
+    const mime = parts[0].match(/:(.*?);/);
+    const mimeType = mime ? mime[1] : 'image/png';
+    const byteString = atob(parts[1]);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
+    }
+    return new Blob([ab], { type: mimeType });
+}
+
+function showUploadOverlay(filename) {
+    const overlay = document.getElementById('upload-overlay');
+    const fill = document.getElementById('upload-overlay-fill');
+    const status = document.getElementById('upload-overlay-status');
+    const nameEl = document.getElementById('upload-overlay-filename');
+
+    if (nameEl) nameEl.textContent = filename;
+    if (status) { status.textContent = 'Uploading...'; status.className = 'upload-overlay-status'; }
+    if (fill) { fill.style.width = '0%'; fill.classList.add('animating'); }
+    if (overlay) overlay.classList.add('visible');
+}
+
+function hideUploadOverlay() {
+    const overlay = document.getElementById('upload-overlay');
+    if (overlay) overlay.classList.remove('visible');
+    uploadAbortController = null;
+}
+
+function setUploadStatus(message, isError) {
+    const status = document.getElementById('upload-overlay-status');
+    if (status) {
+        status.textContent = message;
+        status.className = 'upload-overlay-status' + (isError ? ' error' : ' success');
+    }
+    const fill = document.getElementById('upload-overlay-fill');
+    if (fill) {
+        fill.classList.remove('animating');
+        fill.style.width = '100%';
+    }
+}
+
+async function uploadImageToServer(file) {
+    if (!file) return null;
+
+    showUploadOverlay(file.name || 'image.png');
+    uploadAbortController = new AbortController();
+
+    const cancelBtn = document.getElementById('upload-overlay-cancel');
+    const onCancel = () => {
+        if (uploadAbortController) uploadAbortController.abort();
+    };
+    if (cancelBtn) cancelBtn.addEventListener('click', onCancel, { once: true });
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file, file.name || 'image.png');
+        formData.append('projectId', currentProjectId);
+
+        const resp = await fetch('/api/images/upload', {
+            method: 'POST',
+            body: formData,
+            signal: uploadAbortController.signal
+        });
+
+        if (resp.status === 401) {
+            hideUploadOverlay();
+            window.location.href = '/login.html';
+            return null;
+        }
+
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
+
+        const result = await resp.json();
+        setUploadStatus('Upload complete', false);
+        setTimeout(() => hideUploadOverlay(), 600);
+        return result.url; // e.g. /api/images/abc123
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            hideUploadOverlay();
+            return null; // User canceled
+        }
+        setUploadStatus('Upload failed, using local copy', true);
+        setTimeout(() => hideUploadOverlay(), 1500);
+        console.warn('Image upload failed, using dataURL:', err.message);
+        return null; // Will fallback to dataURL
+    }
+}
+
 // Update project selector dropdown
 function updateProjectSelector() {
     const menu = document.getElementById('project-menu');
@@ -1456,17 +1564,62 @@ function updateProjectSelector() {
     });
 }
 
+// Initialize sync worker for background server sync
+function initSyncWorker() {
+    try {
+        syncWorker = new Worker('sync-worker.js');
+
+        syncWorker.onmessage = function (e) {
+            const msg = e.data;
+            if (msg.type === 'synced') {
+                state._remoteVersion = msg.serverVersion || msg._version;
+                // Persist remote version to meta store
+                if (db) {
+                    try {
+                        const tx = db.transaction([META_STORE], 'readwrite');
+                        const metaStore = tx.objectStore(META_STORE);
+                        metaStore.put({ key: 'remoteVersion_' + currentProjectId, value: state._remoteVersion });
+                    } catch (me) { /* ignore */ }
+                }
+            } else if (msg.type === 'needLogin') {
+                window.location.href = '/login.html';
+            } else if (msg.type === 'syncError') {
+                console.warn('Sync error:', msg.error);
+            } else if (msg.type === 'log') {
+                // Debug log - can be enabled for troubleshooting
+                // console.debug('[SyncWorker]', msg.status, msg.detail);
+            }
+        };
+
+        syncWorker.onerror = function (err) {
+            console.warn('Sync worker error:', err);
+        };
+
+        syncWorker.postMessage({
+            type: 'init',
+            apiBaseURL: location.origin,
+            projectId: currentProjectId,
+            lastRemoteVersion: state._remoteVersion
+        });
+    } catch (e) {
+        console.warn('Failed to initialize sync worker:', e);
+        syncWorker = null;
+    }
+}
+
 // Initialize
 async function init() {
     try {
         await openDatabase();
         await loadProjectsMeta();
         await loadState();
+        initSyncWorker();
         syncUIWithState();
         updateCanvas();
     } catch (e) {
         console.error('Initialization error:', e);
         // Continue with defaults
+        initSyncWorker();
         syncUIWithState();
         updateCanvas();
     }
@@ -1489,6 +1642,8 @@ function initSync() {
 function saveState() {
     if (!db) return;
 
+    state._version = Date.now();
+
     // Convert screenshots to base64 for storage, including per-screenshot settings and localized images
     const screenshotsToSave = state.screenshots.map(s => {
         // Save localized images (without Image objects, just src/name)
@@ -1505,12 +1660,18 @@ function saveState() {
             });
         }
 
+        const firstLangKey = Object.keys(localizedImages)[0];
+        const firstLangSrc = firstLangKey ? localizedImages[firstLangKey]?.src : '';
         return {
-            src: s.image?.src || '', // Legacy compatibility
+            src: firstLangSrc || s.image?.src || '', // Prefer localizedImages string (avoids browser-resolved URL)
             name: s.name,
             deviceType: s.deviceType,
             localizedImages: localizedImages,
-            background: s.background,
+            background: {
+                ...s.background,
+                image: s.background.imageUrl || (s.background.image instanceof HTMLImageElement ? s.background.image.src : null) || null,
+                imageUrl: s.background.imageUrl || null
+            },
             screenshot: s.screenshot,
             text: s.text,
             elements: (s.elements || []).map(el => ({
@@ -1524,6 +1685,7 @@ function saveState() {
 
     const stateToSave = {
         id: currentProjectId,
+        _version: state._version,
         formatVersion: 2, // Version 2: new 3D positioning formula
         screenshots: screenshotsToSave,
         selectedIndex: state.selectedIndex,
@@ -1532,7 +1694,14 @@ function saveState() {
         customHeight: state.customHeight,
         currentLanguage: state.currentLanguage,
         projectLanguages: state.projectLanguages,
-        defaults: state.defaults
+        defaults: {
+            ...state.defaults,
+            background: {
+                ...state.defaults.background,
+                image: state.defaults.background.imageUrl || (state.defaults.background.image instanceof HTMLImageElement ? state.defaults.background.image.src : null) || null,
+                imageUrl: state.defaults.background.imageUrl || null
+            }
+        }
     };
 
     // Update screenshot count in project metadata
@@ -1548,6 +1717,16 @@ function saveState() {
         store.put(stateToSave);
     } catch (e) {
         console.error('Error saving state:', e);
+    }
+
+    // Push to sync worker for background server sync
+    if (syncWorker) {
+        syncWorker.postMessage({
+            type: 'sync',
+            _version: state._version,
+            projectId: currentProjectId,
+            data: stateToSave
+        });
     }
 }
 
@@ -1605,6 +1784,21 @@ function loadState() {
             request.onsuccess = () => {
                 const parsed = request.result;
                 if (parsed) {
+                    state._version = parsed._version || 0;
+
+                    // Load remote version from meta
+                    try {
+                        const metaTx = db.transaction([META_STORE], 'readonly');
+                        const metaStore = metaTx.objectStore(META_STORE);
+                        const versionReq = metaStore.get('remoteVersion_' + currentProjectId);
+                        versionReq.onsuccess = () => {
+                            if (versionReq.result) {
+                                state._remoteVersion = versionReq.result.value || 0;
+                            }
+                        };
+                    } catch (me) {
+                        // Ignore meta read errors
+                    }
                     // Check if this is an old-style project (no per-screenshot settings)
                     const isOldFormat = !parsed.defaults && (parsed.background || parsed.screenshot || parsed.text);
                     const hasScreenshotsWithoutSettings = parsed.screenshots?.some(s => !s.background && !s.screenshot && !s.text);
@@ -1937,12 +2131,27 @@ async function switchProject(projectId) {
     // Save current project first
     saveState();
 
+    // Force sync before switching
+    if (syncWorker) {
+        syncWorker.postMessage({ type: 'forceSync' });
+    }
+
     currentProjectId = projectId;
     saveProjectsMeta();
 
     // Reset and load new project
     resetStateToDefaults();
     await loadState();
+
+    // Update sync worker with new project
+    if (syncWorker) {
+        syncWorker.postMessage({
+            type: 'updateConfig',
+            apiBaseURL: location.origin,
+            projectId: currentProjectId,
+            lastRemoteVersion: state._remoteVersion
+        });
+    }
 
     syncUIWithState();
     updateScreenshotList();
@@ -1977,8 +2186,10 @@ async function deleteProject() {
         return;
     }
 
+    const projectIdToDelete = currentProjectId;
+
     // Remove from projects list
-    const index = projects.findIndex(p => p.id === currentProjectId);
+    const index = projects.findIndex(p => p.id === projectIdToDelete);
     if (index > -1) {
         projects.splice(index, 1);
     }
@@ -1987,7 +2198,12 @@ async function deleteProject() {
     if (db) {
         const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
         const store = transaction.objectStore(PROJECTS_STORE);
-        store.delete(currentProjectId);
+        store.delete(projectIdToDelete);
+    }
+
+    // Delete from server (fire and forget)
+    if (typeof apiDeleteProject === 'function') {
+        apiDeleteProject(projectIdToDelete);
     }
 
     // Switch to first available project
@@ -2074,7 +2290,9 @@ function duplicateScreenshot(index) {
 
     if (original.image?.src) {
         const img = new Image();
-        img.src = original.image.src;
+        // Prefer localizedImages src to avoid browser-resolved absolute URLs
+        const firstLangSrc = original.localizedImages ? (Object.values(original.localizedImages).find(v => v?.src)?.src || original.image.src) : original.image.src;
+        img.src = firstLangSrc;
         clone.image = img;
     }
 
@@ -2497,14 +2715,18 @@ function setupElementEventListeners() {
     const graphicInput = document.getElementById('element-graphic-input');
     if (addGraphicBtn && graphicInput) {
         addGraphicBtn.addEventListener('click', () => graphicInput.click());
-        graphicInput.addEventListener('change', (e) => {
+        graphicInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
+
+            // Non-blocking upload: read dataURL for immediate preview, upload for storage
+            const uploadUrl = await uploadImageToServer(file);
+
             const reader = new FileReader();
             reader.onload = (ev) => {
                 const img = new Image();
                 img.onload = () => {
-                    addGraphicElement(img, ev.target.result, file.name);
+                    addGraphicElement(img, uploadUrl || ev.target.result, file.name);
                 };
                 img.src = ev.target.result;
             };
@@ -4262,20 +4484,26 @@ function setupEventListeners() {
     const bgImageUpload = document.getElementById('bg-image-upload');
     const bgImageInput = document.getElementById('bg-image-input');
     bgImageUpload.addEventListener('click', () => bgImageInput.click());
-    bgImageInput.addEventListener('change', (e) => {
-        if (e.target.files[0]) {
+    bgImageInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            // Non-blocking upload: read dataURL for immediate preview, upload for storage
+            const uploadUrl = await uploadImageToServer(file);
+
             const reader = new FileReader();
             reader.onload = (event) => {
                 const img = new Image();
                 img.onload = () => {
                     setBackground('image', img);
+                    const bg = getBackground();
+                    bg.imageUrl = uploadUrl || event.target.result;
                     document.getElementById('bg-image-preview').src = event.target.result;
                     document.getElementById('bg-image-preview').style.display = 'block';
                     updateCanvas();
                 };
                 img.src = event.target.result;
             };
-            reader.readAsDataURL(e.target.files[0]);
+            reader.readAsDataURL(file);
         }
     });
 
@@ -6051,6 +6279,12 @@ async function processDesktopImageFile(fileData) {
     return new Promise((resolve) => {
         const img = new Image();
         img.onload = async () => {
+            // Upload to server first
+            const blob = dataURLToBlob(fileData.dataUrl);
+            const file = new File([blob], fileData.name);
+            const uploadUrl = await uploadImageToServer(file);
+            const finalSrc = uploadUrl || fileData.dataUrl;
+
             // Detect device type based on aspect ratio
             const ratio = img.width / img.height;
             let deviceType = 'iPhone';
@@ -6075,21 +6309,21 @@ async function processDesktopImageFile(fileData) {
                         existingIndex: existingIndex,
                         detectedLang: detectedLang,
                         newImage: img,
-                        newSrc: fileData.dataUrl,
+                        newSrc: finalSrc,
                         newName: fileData.name
                     });
 
                     if (choice === 'replace') {
-                        addLocalizedImage(existingIndex, detectedLang, img, fileData.dataUrl, fileData.name);
+                        addLocalizedImage(existingIndex, detectedLang, img, finalSrc, fileData.name);
                     } else if (choice === 'create') {
-                        createNewScreenshot(img, fileData.dataUrl, fileData.name, detectedLang, deviceType);
+                        createNewScreenshot(img, finalSrc, fileData.name, detectedLang, deviceType);
                     }
                 } else {
                     // No image for this language yet - just add it silently
-                    addLocalizedImage(existingIndex, detectedLang, img, fileData.dataUrl, fileData.name);
+                    addLocalizedImage(existingIndex, detectedLang, img, finalSrc, fileData.name);
                 }
             } else {
-                createNewScreenshot(img, fileData.dataUrl, fileData.name, detectedLang, deviceType);
+                createNewScreenshot(img, finalSrc, fileData.name, detectedLang, deviceType);
             }
 
             // Update 3D texture if in 3D mode
@@ -6114,6 +6348,12 @@ async function processImageFile(file) {
     return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = async (e) => {
+            const dataURL = e.target.result;
+
+            // Upload image to server (non-blocking fallback: use dataURL if upload fails)
+            const uploadUrl = await uploadImageToServer(file);
+            const finalSrc = uploadUrl || dataURL;
+
             const img = new Image();
             img.onload = async () => {
                 // Detect device type based on aspect ratio
@@ -6140,23 +6380,23 @@ async function processImageFile(file) {
                             existingIndex: existingIndex,
                             detectedLang: detectedLang,
                             newImage: img,
-                            newSrc: e.target.result,
+                            newSrc: finalSrc,
                             newName: file.name
                         });
 
                         if (choice === 'replace') {
-                            addLocalizedImage(existingIndex, detectedLang, img, e.target.result, file.name);
+                            addLocalizedImage(existingIndex, detectedLang, img, finalSrc, file.name);
                         } else if (choice === 'create') {
-                            createNewScreenshot(img, e.target.result, file.name, detectedLang, deviceType);
+                            createNewScreenshot(img, finalSrc, file.name, detectedLang, deviceType);
                         }
                         // 'ignore' does nothing
                     } else {
                         // No image for this language yet - just add it silently
-                        addLocalizedImage(existingIndex, detectedLang, img, e.target.result, file.name);
+                        addLocalizedImage(existingIndex, detectedLang, img, finalSrc, file.name);
                     }
                 } else {
                     // No duplicate - create new screenshot
-                    createNewScreenshot(img, e.target.result, file.name, detectedLang, deviceType);
+                    createNewScreenshot(img, finalSrc, file.name, detectedLang, deviceType);
                 }
 
                 // Update 3D texture if in 3D mode
@@ -6167,7 +6407,7 @@ async function processImageFile(file) {
                 updateCanvas();
                 resolve();
             };
-            img.src = e.target.result;
+            img.src = dataURL;
         };
         reader.readAsDataURL(file);
     });
