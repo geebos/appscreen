@@ -129,7 +129,7 @@ html.tauri-app .right-sidebar {
 
 .app-container {
     display: grid;
-    grid-template-columns: 320px 1fr 340px;
+    grid-template-columns: 380px 1fr 340px;
     min-height: 100vh;
     max-height: 100vh;
 }
@@ -2368,7 +2368,7 @@ input[type="range"]::-webkit-slider-thumb {
     position: absolute;
     top: calc(100% + 4px);
     left: 0;
-    width: calc(320px - 40px); /* Full sidebar width minus padding */
+    width: 100%;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 10px;

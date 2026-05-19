@@ -1,0 +1,16 @@
+services:
+  appscreen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: appscreen:dev
+    container_name: appscreen-dev
+    ports:
+      - "${PORT}:80"
+    restart: unless-stopped
+    environment:
+      - AUTH_USERNAME=${AUTH_USERNAME:-admin}
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-admin}
+    volumes:
+      - ./data:/app/data
+      - ./src/web:/app/src/web

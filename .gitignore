@@ -25,3 +25,7 @@ frontend-dist/
 *.AppImage
 *.deb
 *.snap
+
+# env
+.env*
+!.env.example
